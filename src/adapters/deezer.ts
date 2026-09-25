@@ -1,26 +1,21 @@
-import { compareTwoStrings } from 'string-similarity';
-
-import {
-  ADAPTERS_QUERY_LIMIT,
-  RESPONSE_COMPARE_MIN_INCLUSION_SCORE,
-  RESPONSE_COMPARE_MIN_SCORE,
-} from '~/config/constants';
-import { Adapter, MetadataType } from '~/config/enum';
+import { ADAPTERS_QUERY_LIMIT } from '~/config/constants';
+import { Adapter, MetadataType, Parser } from '~/config/enum';
 import { ENV } from '~/config/env';
 import { cacheSearchResultLink, getCachedSearchResultLink } from '~/services/cache';
-import type { SearchMetadata, SearchResultLink } from '~/services/search';
+import type { SearchMetadata } from '~/services/search';
+import { findBestMatch, type MatchCandidate } from '~/utils/compare';
 import HttpClient from '~/utils/http-client';
 import { logger } from '~/utils/logger';
+import { getServiceGuard } from '~/utils/service-guard';
 
 interface DeezerSearchResponse {
   total: number;
-  data: [
-    {
-      title?: string;
-      name?: string;
-      link: string;
-    },
-  ];
+  data: Array<{
+    title?: string;
+    name?: string;
+    link: string;
+    artist?: { name: string };
+  }>;
 }
 
 const DEEZER_SEARCH_TYPES = {
@@ -32,7 +27,12 @@ const DEEZER_SEARCH_TYPES = {
   [MetadataType.Podcast]: undefined,
 };
 
-export async function getDeezerLink(query: string, metadata: SearchMetadata) {
+export async function getDeezerLink(
+  query: string,
+  metadata: SearchMetadata,
+  sourceParser: Parser,
+  sourceId: string
+) {
   const searchType = DEEZER_SEARCH_TYPES[metadata.type];
   if (!searchType) return null;
 
@@ -44,36 +44,33 @@ export async function getDeezerLink(query: string, metadata: SearchMetadata) {
   const url = new URL(`${ENV.adapters.deezer.apiUrl}/${searchType}`);
   url.search = params.toString();
 
-  const cache = await getCachedSearchResultLink(url);
+  const cache = await getCachedSearchResultLink(Adapter.Deezer, sourceParser, sourceId);
   if (cache) {
     logger.info(`[Deezer] (${url}) cache hit`);
     return cache;
   }
 
+  const guard = getServiceGuard('deezer');
+  if (!guard.acquire()) {
+    logger.warn('[Deezer] service guard: request blocked');
+    return null;
+  }
+
   try {
     const response = await HttpClient.get<DeezerSearchResponse>(url.toString());
+    guard.recordSuccess();
 
     if (response.total === 0) {
       throw new Error(`No results found: ${JSON.stringify(response)}`);
     }
 
-    let bestMatch: SearchResultLink | null = null;
-    let highestScore = 0;
+    const candidates: MatchCandidate[] = response.data.map(item => ({
+      title: item.title || item.name || '',
+      artist: item.artist?.name,
+      url: item.link,
+    }));
 
-    for (const item of response.data) {
-      const title = item.title || item.name || '';
-      const score = compareTwoStrings(title.toLowerCase(), query.toLowerCase());
-
-      if (score > highestScore) {
-        highestScore = score;
-        bestMatch = {
-          type: Adapter.Deezer,
-          url: item.link,
-          isVerified: score >= RESPONSE_COMPARE_MIN_SCORE,
-          notAvailable: score < RESPONSE_COMPARE_MIN_INCLUSION_SCORE,
-        };
-      }
-    }
+    const { bestMatch, highestScore } = findBestMatch(candidates, query, Adapter.Deezer);
 
     if (!bestMatch) {
       throw new Error('No valid matches found.');
@@ -83,10 +80,11 @@ export async function getDeezerLink(query: string, metadata: SearchMetadata) {
       `[Deezer] Best match score: ${highestScore.toFixed(3)} (verified: ${bestMatch.isVerified ? 'yes' : 'no'}, available: ${!bestMatch.notAvailable ? 'yes' : 'no'})`
     );
 
-    await cacheSearchResultLink(url, bestMatch);
+    await cacheSearchResultLink(Adapter.Deezer, sourceParser, sourceId, bestMatch);
 
     return bestMatch;
   } catch (error) {
+    guard.recordFailure();
     logger.error(`[Deezer] (${url}) ${error}`);
     return null;
   }

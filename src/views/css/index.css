@@ -1,30 +1,100 @@
-@import 'notyf/notyf.min.css';
-@import "tailwindcss";
+@import 'tailwindcss';
+@import 'toastify-js/src/toastify.css';
 
 html {
   font-family: 'Poppins', sans-serif;
   font-weight: normal;
   font-style: normal;
+  color-scheme: dark;
 }
 
-.htmx-indicator {
-  transition: opacity 100ms ease-in !important;
-}
-
-.animate-loading-bar {
-  animation: loading 2s linear infinite;
-}
-
-button {
-  @apply cursor-pointer;
-}
-
-@keyframes loading {
-  0% {
-    left: -100%;
+@layer components {
+  .custom-svg {
+    height: 1em;
+    width: 1em;
+    display: inline-block;
+    margin: 0;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
   }
 
-  100% {
-    left: 100%;
+  .svg-brand-pandora {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='%23fff' viewBox='0 0 24 24'%3E%3Cpath d='M1.882 0v24H8.32a1.085 1.085 0 001.085-1.085v-4.61h1.612c7.88 0 11.103-4.442 11.103-9.636C22.119 2.257 17.247 0 12.662 0H1.882z'/%3E%3C/svg%3E");
   }
+
+  .svg-brand-qobuz {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' stroke='%23fff' stroke-width='2' viewBox='0 0 24 24'%3E %3Ccircle cx='12' cy='12' r='10'/%3E %3Ccircle cx='12' cy='12' r='2' stroke-width='2.5'/%3E %3Cline x1='16.5' x2='19' y1='16.5' y2='19' stroke-linecap='round'/%3E %3Cline x1='19' x2='22' y1='19' y2='22'/%3E %3C/svg%3E");
+  }
+
+  /* In-flight forms go quiet instead of double-submitting. */
+  form.htmx-request {
+    opacity: 0.7;
+    pointer-events: none;
+  }
+
+}
+
+/* Unlayered overrides (see note above): these must beat Tailwind utilities.
+   NOTE: Tailwind v4 puts utilities in a later layer, and layers beat
+   specificity — anything here that fights a utility MUST live in this
+   unlayered block, never in @layer components. */
+#home-main.home-hero {
+  justify-content: center;
+}
+
+/* One title rule for hero and results: the results size everywhere, never
+   wrapping. nowrap (not smaller text) is what keeps link/no-link states
+   identical. Unlayered so it beats the text-4xl utility like the old hero
+   rule did. */
+#home-main .home-title {
+  white-space: nowrap;
+}
+
+/* Only below 380px the fixed title would overflow: scale it to fit instead
+   of wrapping or scrolling. Wider phones keep the exact approved size. */
+@media (max-width: 380px) {
+  #home-main .home-title {
+    font-size: 8.3vw;
+  }
+}
+
+#home-main.has-results {
+  /* Safe centering: content sits centered like the hero while it fits, and
+     falls back to top-aligned (scrollable, nothing clipped) on overflow.
+     Older browsers ignore `safe` and keep today's top alignment. */
+  justify-content: safe center;
+}
+
+/* Loading placeholder: hidden until htmx marks it requested. Unlayered:
+   the `hidden` utility would otherwise win and the spinner never shows. */
+#search-skeleton {
+  display: none;
+}
+
+#search-skeleton.htmx-request {
+  display: flex;
+}
+
+/* Toast theme, UNLAYERED on purpose like the overrides above: toastify's
+   own stylesheet is unlayered, and unlayered beats layered, so a layered
+   theme would lose to its blue default. Every toast we fire is an error,
+   so red is the default theme, not a variant; the copy confirmation keeps
+   a quiet dark pill so success never shouts. */
+.toastify.idhs-toast {
+  background: #dc2626;
+  border: 1px solid #b91c1c;
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px rgb(0 0 0 / 0.5);
+  color: #fafafa;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 400;
+  max-width: min(90vw, 360px);
+  padding: 12px 20px;
+}
+
+.toastify.idhs-toast--success {
+  background: #18181b;
+  border-color: #3f3f46;
 }

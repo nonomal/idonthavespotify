@@ -1,30 +1,28 @@
-import { Notyf } from 'notyf';
-
-/** @type {Notyf | undefined} */
-let _toast;
+import Toastify from 'toastify-js';
 
 /**
- * Initializes and returns a Notyf instance for displaying toast notifications.
- *
- * @returns {Notyf} The Notyf instance for toast notifications.
+ * Toast notifications via toastify-js (zero-dep): red is the default theme
+ * because every toast we fire is an error, except the copy confirmation.
+ * @param {string} message
+ * @param {boolean} ok
  */
-export const toast = () => {
-  if (_toast) return _toast;
-
-  _toast = new Notyf({
-    ripple: false,
-    dismissible: true,
-    duration: 2000,
-    types: [
-      {
-        type: 'success',
-        background: 'black',
-      },
-    ],
-  });
-
-  return _toast;
+const show = (message, ok) => {
+  Toastify({
+    text: message,
+    duration: ok ? 2500 : 4000,
+    close: false,
+    gravity: 'bottom',
+    position: 'center',
+    stopOnFocus: true,
+    escapeMarkup: true,
+    className: ok ? 'idhs-toast idhs-toast--success' : 'idhs-toast idhs-toast--error',
+  }).showToast();
 };
+
+export const toast = () => ({
+  success: message => show(message, true),
+  error: message => show(message, false),
+});
 
 /**
  * Copies the provided link to the clipboard and shows a success toast notification.

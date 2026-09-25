@@ -4,17 +4,10 @@ interface MainLayoutProps {
   title?: string;
   description?: string;
   image?: string;
-  isProduction: boolean;
   children: typeof Fragment;
 }
 
-const MainLayout = ({
-  title,
-  description,
-  image,
-  isProduction,
-  children,
-}: MainLayoutProps) => {
+const MainLayout = ({ title, description, image, children }: MainLayoutProps) => {
   return (
     <div>
       <Helmet>
@@ -23,14 +16,14 @@ const MainLayout = ({
         <title>I Don't Have Spotify</title>
         <meta
           name="viewport"
-          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no"
+          content="width=device-width, initial-scale=1.0"
         />
         <link rel="icon" href="/assets/favicon.ico" />
         <meta name="theme-color" content="#000000" />
 
         <meta
           name="description"
-          content="Effortlessly convert Spotify links to your preferred streaming service"
+          content="Turn any Spotify, Apple Music, YouTube, Deezer, Tidal, SoundCloud, Qobuz, Pandora, or Bandcamp link into a shareable preview across the streaming services your friends use."
         />
         <meta
           name="keywords"
@@ -38,14 +31,14 @@ const MainLayout = ({
         />
 
         <meta property="og:type" content="website" />
-        <meta property="og:url" content="https://idonthavespotify.donado.co" />
+        <meta property="og:url" content="https://idonthavespotify.sjdonado.com" />
         <meta property="og:site_name" content="I Don't Have Spotify" />
         <meta property="og:title" content={title ?? "I Don't Have Spotify"} />
         <meta
           property="og:description"
           content={
             description ??
-            'Effortlessly convert Spotify links to your preferred streaming service'
+            'Turn any Spotify, Apple Music, YouTube, Deezer, Tidal, SoundCloud, Qobuz, Pandora, or Bandcamp link into a shareable preview across the streaming services your friends use.'
           }
         />
         <meta
@@ -62,7 +55,11 @@ const MainLayout = ({
           href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"
         />
         <link href="https://fonts.cdnfonts.com/css/poppins" rel="stylesheet" />
-        <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+        <script
+          src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"
+          integrity="sha384-BvJpBiO8Kh31EqtJe5DRIeWrHWnCGkwytKs9NKFi86Hhw96dEqdEMzZDeK9iEGTc"
+          crossorigin="anonymous"
+        ></script>
 
         <link href="/assets/index.min.css" rel="stylesheet" />
       </Helmet>
@@ -70,15 +67,7 @@ const MainLayout = ({
       <body class="h-screen bg-black font-light text-white">{children}</body>
 
       <Helmet footer>
-        {isProduction && (
-          <script
-            defer
-            src="https://umami.donado.co/script.js"
-            data-website-id="da89a7a2-dd17-4c7f-b7ff-de28a7046a0e"
-            data-auto-track="false"
-          ></script>
-        )}
-        <script src="assets/index.js" />
+        <script type="module" src="assets/index.js" />
       </Helmet>
     </div>
   );

@@ -1,20 +1,10 @@
-import { TIDAL_SEARCH_TYPES } from '~/adapters/tidal';
 import { YOUTUBE_SEARCH_TYPES } from '~/adapters/youtube';
 import { MetadataType } from '~/config/enum';
 import { ENV } from '~/config/env';
 
 export const apiSearchEndpoint = (baseUrl: URL) => `${baseUrl}api/search?v=1`;
 
-export const urlShortenerLink = ENV.services.urlShortener.apiUrl;
-export const urlShortenerResponseMock = {
-  data: {
-    id: '6ce3f2d6-d73c-4c7f-b622-3b30e34d70dd',
-    refer: 'http://localhost:4000/2saYhYg',
-    origin:
-      'http://localhost:3000/?id=b3Blbi5zcG90aWZ5LmNvbS90cmFjay8yS3ZIQzl6MTRHU2w0WXBrTk1YMzg0',
-    clicks: [],
-  },
-};
+export const pageSearchEndpoint = (baseUrl: URL) => `${baseUrl}search`;
 
 export const cachedSpotifyLink = 'https://open.spotify.com/track/2KvHC9z14GSl4YpkNMX384';
 
@@ -26,7 +16,7 @@ export const cachedResponse = {
   image: 'https://i.scdn.co/image/ab67616d0000b2734f0fd9dad63977146e685700',
   audio: 'https://p.scdn.co/mp3-preview/df989a31c8233f46b6a997c59025f9c8021784aa',
   source: 'https://open.spotify.com/track/2KvHC9z14GSl4YpkNMX384',
-  universalLink: 'http://localhost:4000/2saYhYg',
+  universalLink: `${ENV.app.url}?id=b3Blbi5zcG90aWZ5LmNvbS90cmFjay8yS3ZIQzl6MTRHU2w0WXBrTk1YMzg0`,
   links: [
     {
       type: 'appleMusic',
@@ -63,7 +53,7 @@ export const getYouTubeSearchLink = (query: string, type: MetadataType) => {
     type: searchType,
     regionCode: 'US',
     q: query,
-    part: 'id',
+    part: 'id,snippet',
     safeSearch: 'none',
     key: ENV.adapters.youTube.apiKey,
   });
@@ -106,18 +96,20 @@ export const getSoundCloudSearchLink = (query: string) => {
   return url.toString();
 };
 
-export const getTidalSearchLink = (query: string, type: MetadataType) => {
-  const searchType = TIDAL_SEARCH_TYPES[type]!;
-
+export const getQobuzSearchLink = (query: string) => {
   const params = new URLSearchParams({
-    countryCode: 'US',
-    include: searchType,
+    q: query,
+    limit: '4',
   });
 
   const url = new URL(
-    `${ENV.adapters.tidal.apiUrl}/${encodeURIComponent(query)}/relationships/${searchType}`
+    `${ENV.adapters.qobuz.storeUrl.replace('qobuz.com/', 'qobuz.com/v4/')}/catalog/search/autosuggest`
   );
   url.search = params.toString();
 
   return url.toString();
 };
+
+export const getBandcampApiUrl = () => ENV.adapters.bandcamp.apiUrl;
+
+export const getPandoraApiUrl = () => ENV.adapters.pandora.apiUrl;

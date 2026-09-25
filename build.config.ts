@@ -30,7 +30,8 @@ async function buildCSS(options: BuildOptions = {}) {
   }
 
   if (options.watch) {
-    tailwindCmd.push('--watch');
+    // =always: keep watching when stdin is closed (e.g. under `bun run --parallel`)
+    tailwindCmd.push('--watch=always');
   }
 
   try {
@@ -100,7 +101,14 @@ async function buildJS(options: BuildOptions = {}) {
 async function watchJS(options: BuildOptions) {
   console.log('👀 Starting JS watcher...');
 
-  const jsWatchCmd = ['bun', 'build', './src/views/controllers/index.js', '--outdir', './public/assets', '--watch'];
+  const jsWatchCmd = [
+    'bun',
+    'build',
+    './src/views/controllers/index.js',
+    '--outdir',
+    './public/assets',
+    '--watch',
+  ];
 
   if (options.minify || isProduction) {
     jsWatchCmd.push('--minify');
@@ -128,17 +136,19 @@ async function buildAssets(options: BuildOptions = {}) {
   if (options.watch) {
     console.log('👀 Starting watch mode...');
 
-    // Initial build
+    // Initial builds
     try {
+      // Build CSS once before starting watcher
+      await buildCSS({ ...options, watch: false });
       await buildJS(options);
-      console.log('✅ Initial JS build completed');
+      console.log('✅ Initial build completed');
     } catch (error) {
       console.error('Initial build failed:', error);
       process.exit(1);
     }
 
     // Start watchers (both return processes that stay alive)
-    const cssProc = await buildCSS(options);
+    const cssProc = await buildCSS({ ...options, watch: true });
     const jsProc = await watchJS(options);
 
     console.log('✅ Watch mode started - files will rebuild on changes');

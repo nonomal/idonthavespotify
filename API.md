@@ -1,6 +1,6 @@
 # API Documentation
 
-Base URL: `http://idonthavespotify.sjdonado.com`
+Base URL: `https://idonthavespotify.sjdonado.com`
 
 ## Endpoints
 
@@ -21,7 +21,7 @@ Convert music links across streaming platforms.
 
 - `link`: Valid music link from any supported platform
 - `adapters`: Target platforms (default: all platforms)
-  - Available: `spotify`, `youTube`, `appleMusic`, `deezer`, `soundCloud`, `tidal`
+  - Available: `spotify`, `youTube`, `appleMusic`, `deezer`, `soundCloud`, `tidal`, `qobuz`, `bandcamp`, `pandora` (Tidal resolves via the MusicBrainz fallback)
 
 **Response (200):**
 ```json
@@ -33,7 +33,7 @@ Convert music links across streaming platforms.
   "image": "string (optional)",
   "audio": "string (optional)",
   "source": "string",
-  "universalLink": "string",
+  "universalLink": "string (plain `APP_URL?id=<id>` share link, e.g. `https://idonthavespotify.sjdonado.com?id=encoded_id`)",
   "links": [
     {
       "type": "string",
@@ -47,12 +47,16 @@ Convert music links across streaming platforms.
 
 **Errors:**
 - `400`: Invalid link or missing parameters
-- `429`: Rate limit exceeded (10 requests/minute)
+- `401`: Email verification required (public instance only; response carries `auth: "email-otp"`)
+- `429`: Per-email quota reached (response carries `retryAfter` seconds)
 - `500`: Processing failed
+- `503`: Quota check or gate temporarily unavailable
+
+On the public instance, search is gated behind a browser login: logging in mints a session cookie, and that cookie is the only credential `/api/search` accepts. There are no API tokens, so programmatic clients such as the Raycast extension target self-hosted instances, where the gate is off and search stays open.
 
 **Example:**
 ```bash
-curl -X POST "http://idonthavespotify.sjdonado.com/api/search?v=1" \
+curl -X POST "https://idonthavespotify.sjdonado.com/api/search?v=1" \
   -H "Content-Type: application/json" \
   -d '{
     "link": "https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc",
@@ -60,37 +64,83 @@ curl -X POST "http://idonthavespotify.sjdonado.com/api/search?v=1" \
   }'
 ```
 
+### POST `/api/auth/request-code`
+
+Send a 6-digit code to an email address (public instance only).
+
+**Request Body:**
+```json
+{
+  "email": "string (required, popular providers only, no `+` aliases)"
+}
+```
+
+**Response (200):**
+```json
+{ "ok": true }
+```
+
+**Errors:**
+- `400`: Rejected address (unknown provider, alias, disposable, typo hint)
+- `429`: Code already sent, retry with `retryAfter` seconds
+- `502`: Code could not be sent
+
+### POST `/api/auth/verify-code`
+
+Exchange an email plus code for a session. Post a form for a session cookie plus page refresh (web UI); with `Accept: application/json` the same call sets the cookie and answers `{ "ok": true }`. No tokens are issued. Form posts from the web UI receive HTML fragments with the same statuses instead of JSON, so errors render inline where the action happened.
+
+**Request Body:**
+```json
+{
+  "email": "string (required)",
+  "code": "string (required, 6 digits)"
+}
+```
+
+**Response (200, JSON):**
+```json
+{ "ok": true }
+```
+plus a `Set-Cookie: idhs_session=...` header (30-day TTL).
+
+**Errors:**
+- `400`: Invalid or expired code
+
 ### GET `/api/status`
 
-Check rate limit status for your IP.
+Service quota and health overview (service-guard budgets plus timestamp).
+When the public instance gate is on, the response also names the quota policy, and
+authenticated callers see their remaining searches.
 
 **Response (200):**
 ```json
 {
-  "ip": "string",
-  "rateLimits": {
-    "web": {
-      "allowed": "boolean",
-      "remaining": "number",
-      "resetIn": "number"
-    },
-    "api": {
-      "allowed": "boolean",
-      "remaining": "number",
-      "resetIn": "number"
+  "serviceGuards": {
+    "<service>": {
+      "callsUsed": "number",
+      "callsMax": "number",
+      "windowResetsIn": "number",
+      "circuitOpen": "boolean",
+      "failures": "number"
     }
   },
-  "storeSize": {
-    "web": "number",
-    "api": "number"
+  "timestamp": "string",
+  "gate": {
+    "enabled": "boolean",
+    "quota": { "limit": "number", "windowSec": "number", "cooldownSec": "number" }
   },
-  "timestamp": "string"
+  "identity": {
+    "remaining": "number",
+    "resetInSec": "number"
+  }
 }
 ```
 
+`identity` is present only on authenticated calls.
+
 **Example:**
 ```bash
-curl "http://idonthavespotify.sjdonado.com/api/status"
+curl "https://idonthavespotify.sjdonado.com/api/status"
 ```
 
 ## Supported Platforms
@@ -105,23 +155,13 @@ curl "http://idonthavespotify.sjdonado.com/api/status"
 - Google Music Share: `https://www.google.com/gasearch*`, `https://share.google/*`
 
 **Output (searchable):**
-- Spotify, YouTube, Apple Music, Deezer, SoundCloud, Tidal
-
-## Rate Limits
-
-- **Limit:** 10 requests per minute per IP
-- **Headers:**
-  - `X-RateLimit-Limit`: Maximum requests allowed
-  - `X-RateLimit-Remaining`: Requests remaining
-  - `X-RateLimit-Reset`: Reset timestamp
-  - `Retry-After`: Seconds to wait (when rate limited)
+- Spotify, YouTube, Apple Music, Deezer, SoundCloud, Tidal, Qobuz, Bandcamp, Pandora
 
 ## Error Responses
 
 All errors follow this format:
 ```json
 {
-  "error": "error message",
-  "retryAfter": 60 (optional, only on 429)
+  "error": "error message"
 }
 ```
