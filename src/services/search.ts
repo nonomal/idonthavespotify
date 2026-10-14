@@ -1,34 +1,45 @@
 import { getAppleMusicLink } from '~/adapters/apple-music';
+import { getApplePodcastsLink, getPodcastFeedLink } from '~/adapters/apple-podcasts';
+import { getBandcampLink } from '~/adapters/bandcamp';
 import { getDeezerLink } from '~/adapters/deezer';
+import { toInvidiousLink } from '~/adapters/invidious';
+import { getJiosaavnLink } from '~/adapters/jiosaavn';
+import { getPandoraLink } from '~/adapters/pandora';
+import { getQobuzLink } from '~/adapters/qobuz';
 import { getSoundCloudLink } from '~/adapters/sound-cloud';
 import { getSpotifyLink } from '~/adapters/spotify';
-import { getTidalLink } from '~/adapters/tidal';
 import { getYouTubeLink } from '~/adapters/youtube';
 import { Adapter, MetadataType, Parser, type StreamingServiceType } from '~/config/enum';
 import { ENV } from '~/config/env';
+import { getAppleMusicMetadata, getAppleMusicQueryFromMetadata } from '~/parsers/apple-music';
 import {
-  getAppleMusicMetadata,
-  getAppleMusicQueryFromMetadata,
-} from '~/parsers/apple-music';
+  getApplePodcastsMetadata,
+  getApplePodcastsQueryFromMetadata,
+} from '~/parsers/apple-podcasts';
+import { getBandcampMetadata, getBandcampQueryFromMetadata } from '~/parsers/bandcamp';
 import { getDeezerMetadata, getDeezerQueryFromMetadata } from '~/parsers/deezer';
+import { getGoogleMetadata, getGoogleQueryFromMetadata } from '~/parsers/google';
+import { getJiosaavnMetadata, getJiosaavnQueryFromMetadata } from '~/parsers/jiosaavn';
 import { getSearchParser } from '~/parsers/link';
+import { getPandoraMetadata, getPandoraQueryFromMetadata } from '~/parsers/pandora';
+import { getQobuzMetadata, getQobuzQueryFromMetadata } from '~/parsers/qobuz';
 import {
   getSoundCloudMetadata,
   getSoundCloudQueryFromMetadata,
 } from '~/parsers/sound-cloud';
 import { getSpotifyMetadata, getSpotifyQueryFromMetadata } from '~/parsers/spotify';
 import { getTidalMetadata, getTidalQueryFromMetadata } from '~/parsers/tidal';
-import { getUniversalMetadataFromTidal } from '~/parsers/tidal-universal-link';
 import { getYouTubeMetadata, getYouTubeQueryFromMetadata } from '~/parsers/youtube';
+import { resolveMusicBrainzLinks } from '~/services/musicbrainz';
 import { generateId } from '~/utils/encoding';
 import { logger } from '~/utils/logger';
-import { shortenLink } from '~/utils/url-shortener';
+import { cleanSearchQuery } from '~/utils/query';
 
 export type SearchMetadata = {
   title: string;
   description: string;
   type: MetadataType;
-  image: string;
+  image?: string;
   audio?: string;
 };
 
@@ -36,14 +47,26 @@ export type SearchResultLink = {
   type: Adapter;
   url: string;
   isVerified?: boolean;
+  notAvailable?: boolean;
+  // Internal: the Deezer hit's ISRC for the MusicBrainz fallback; responses
+  // copy only the fields above.
+  isrc?: string;
 };
+
+// Partial: parse-only services (Google, Tidal) have no outbound search.
+export type LinkGetter = (
+  query: string,
+  metadata: SearchMetadata,
+  sourceParser: Parser,
+  sourceId: string
+) => Promise<SearchResultLink | null>;
 
 export type SearchResult = {
   id: string;
   type: MetadataType;
   title: string;
   description: string;
-  image: string;
+  image?: string;
   audio?: string;
   source: string;
   universalLink: string;
@@ -55,12 +78,16 @@ export type SearchProps =
       link?: string;
       searchId?: string;
       adapters?: Adapter[];
+      // false skips the MusicBrainz fallback (fast metadata-only searches).
+      fallback?: boolean;
       headless: true;
     }
   | {
       link?: string;
       searchId?: string;
       adapters?: Adapter[];
+      // false skips the MusicBrainz fallback (fast metadata-only searches).
+      fallback?: boolean;
       headless: false;
     };
 
@@ -72,6 +99,7 @@ export const search = async <T extends SearchProps>({
   link,
   searchId,
   adapters,
+  fallback = true,
   headless,
 }: T): Promise<SearchReturn<T>> => {
   const searchParser = getSearchParser(link, searchId);
@@ -83,6 +111,13 @@ export const search = async <T extends SearchProps>({
     Adapter.Deezer,
     Adapter.SoundCloud,
     Adapter.Tidal,
+    Adapter.Qobuz,
+    Adapter.Bandcamp,
+    Adapter.Pandora,
+    Adapter.Jiosaavn,
+    Adapter.ApplePodcasts,
+    Adapter.PodcastFeed,
+    Adapter.Invidious,
   ];
 
   logger.info(`[search] (searchAdapters) ${searchAdapters}`);
@@ -94,6 +129,12 @@ export const search = async <T extends SearchProps>({
     [Parser.Deezer]: getDeezerMetadata,
     [Parser.SoundCloud]: getSoundCloudMetadata,
     [Parser.Tidal]: getTidalMetadata,
+    [Parser.Google]: getGoogleMetadata,
+    [Parser.Qobuz]: getQobuzMetadata,
+    [Parser.Bandcamp]: getBandcampMetadata,
+    [Parser.Pandora]: getPandoraMetadata,
+    [Parser.Jiosaavn]: getJiosaavnMetadata,
+    [Parser.ApplePodcasts]: getApplePodcastsMetadata,
   };
 
   const queryExtractorsMap = {
@@ -103,15 +144,26 @@ export const search = async <T extends SearchProps>({
     [Parser.Deezer]: getDeezerQueryFromMetadata,
     [Parser.SoundCloud]: getSoundCloudQueryFromMetadata,
     [Parser.Tidal]: getTidalQueryFromMetadata,
+    [Parser.Google]: getGoogleQueryFromMetadata,
+    [Parser.Qobuz]: getQobuzQueryFromMetadata,
+    [Parser.Bandcamp]: getBandcampQueryFromMetadata,
+    [Parser.Pandora]: getPandoraQueryFromMetadata,
+    [Parser.Jiosaavn]: getJiosaavnQueryFromMetadata,
+    [Parser.ApplePodcasts]: getApplePodcastsQueryFromMetadata,
   };
 
-  const linkGettersMap = {
+  const linkGettersMap: Partial<Record<Adapter, LinkGetter>> = {
     [Adapter.Spotify]: getSpotifyLink,
     [Adapter.YouTube]: getYouTubeLink,
     [Adapter.AppleMusic]: getAppleMusicLink,
     [Adapter.Deezer]: getDeezerLink,
     [Adapter.SoundCloud]: getSoundCloudLink,
-    [Adapter.Tidal]: getTidalLink,
+    [Adapter.Qobuz]: getQobuzLink,
+    [Adapter.Bandcamp]: getBandcampLink,
+    [Adapter.Pandora]: getPandoraLink,
+    [Adapter.Jiosaavn]: getJiosaavnLink,
+    [Adapter.ApplePodcasts]: getApplePodcastsLink,
+    [Adapter.PodcastFeed]: getPodcastFeedLink,
   };
 
   const metadataFetcher = metadataFetchersMap[searchParser.type];
@@ -123,7 +175,8 @@ export const search = async <T extends SearchProps>({
 
   // Even if headless, we need initial metadata and query for link extraction
   const metadata = await metadataFetcher(searchParser.id, searchParser.source);
-  const query = queryExtractor(metadata);
+  const rawQuery = queryExtractor(metadata);
+  const query = cleanSearchQuery(rawQuery);
   const parserType = searchParser.type as StreamingServiceType;
 
   logger.info(
@@ -132,14 +185,23 @@ export const search = async <T extends SearchProps>({
 
   const id = generateId(searchParser.source);
   const universalLink = `${ENV.app.url}?id=${id}`;
-  const linkSearchResult: SearchResultLink = {
-    type: parserType,
-    url: link as string,
-    isVerified: true,
-  };
+
+  // Google is a parser-only service (not a streaming adapter), so we don't create a link for it
+  const isParserOnlyService = searchParser.type === Parser.Google;
+
+  const linkSearchResult: SearchResultLink | null = isParserOnlyService
+    ? null
+    : {
+        type: parserType,
+        // The decoded source on `?id=` loads, where `link` is undefined.
+        url: searchParser.source,
+        isVerified: true,
+      };
 
   // Early return if only one adapter matches the parser type
+  // Skip this for parser-only services like Google
   if (
+    !isParserOnlyService &&
     searchAdapters.length === 1 &&
     searchParser.type === (searchAdapters[0] as StreamingServiceType)
   ) {
@@ -159,58 +221,15 @@ export const search = async <T extends SearchProps>({
       audio: metadata.audio,
       source: searchParser.source,
       universalLink,
-      links: [linkSearchResult],
+      links: [linkSearchResult!],
     } as SearchReturn<T>;
   }
 
-  const links: SearchResultLink[] = [];
-  const existingAdapters = new Set<Adapter>();
+  const links: SearchResultLink[] = linkSearchResult ? [linkSearchResult] : [];
+  let isrc: string | undefined;
 
-  let tidalLink: SearchResultLink | null = linkSearchResult;
-  if (searchAdapters.includes(Adapter.Tidal) && parserType !== Adapter.Tidal) {
-    tidalLink = await getTidalLink(query, metadata);
-    if (tidalLink) {
-      existingAdapters.add(Adapter.Tidal);
-    }
-  }
-
-  if (tidalLink) {
-    links.push(tidalLink);
-
-    // Fetch universal links from Tidal
-    const fromTidalULink = await getUniversalMetadataFromTidal(
-      `${tidalLink.url}/u`,
-      tidalLink.isVerified as boolean
-    );
-
-    logger.info(
-      `[${search.name}] (tidal universalLink results) ${Object.values(
-        fromTidalULink ?? {}
-      )
-        .map(link => link?.url)
-        .filter(Boolean)}`
-    );
-
-    if (fromTidalULink) {
-      for (const adapterKey in fromTidalULink) {
-        const adapter = adapterKey as Adapter;
-        // Only add the adapter if it's requested and not the parser type
-        if (
-          searchAdapters.includes(adapter) &&
-          parserType !== adapter &&
-          fromTidalULink[adapter]
-        ) {
-          links.push(fromTidalULink[adapter]);
-          existingAdapters.add(adapter);
-        }
-      }
-    }
-  }
-
-  // Prepare promises for remaining adapters
-  const remainingAdapters = searchAdapters.filter(
-    adapter => !existingAdapters.has(adapter) && parserType !== adapter
-  );
+  // Prepare promises for all adapters except the parser type
+  const remainingAdapters = searchAdapters.filter(adapter => parserType !== adapter);
 
   await Promise.all(
     remainingAdapters
@@ -218,15 +237,62 @@ export const search = async <T extends SearchProps>({
         const linkGetter = linkGettersMap[adapter];
         if (!linkGetter) return null;
 
-        return linkGetter(query, metadata).then(link => {
-          if (link) {
-            links.push({ type: adapter, url: link.url, isVerified: true });
-            existingAdapters.add(adapter);
+        return linkGetter(query, metadata, searchParser.type, searchParser.id).then(
+          link => {
+            if (link?.isrc && adapter === Adapter.Deezer) isrc = link.isrc;
+            if (link) {
+              logger.info(
+                `[${search.name}] Found ${adapter} link: ${link.url}, isVerified: ${link.isVerified}, notAvailable: ${link.notAvailable || false}`
+              );
+              links.push({
+                type: adapter,
+                url: link.url,
+                isVerified: link.isVerified,
+                notAvailable: link.notAvailable,
+              });
+            } else {
+              logger.info(
+                `[${search.name}] No ${adapter} link found for query: "${query}"`
+              );
+            }
           }
-        });
+        );
       })
       .filter(Boolean)
   );
+
+  // Global fallback: MusicBrainz streaming relations fill adapters that
+  // missed (including Tidal, which has no outbound adapter). Cached and
+  // verified-only; playlists/shows unsupported.
+  const present = new Set(
+    links.filter(link => !link.notAvailable).map(link => link.type)
+  );
+  const missing = searchAdapters.filter(
+    adapter =>
+      adapter !== parserType && adapter !== Adapter.Invidious && !present.has(adapter)
+  );
+  if (fallback && missing.length > 0) {
+    const fallback = await resolveMusicBrainzLinks({ query, metadata, missing, isrc });
+    // Replace unavailable placeholders instead of duplicating the card.
+    for (const link of fallback) {
+      const unavailableIndex = links.findIndex(
+        existing => existing.type === link.type && existing.notAvailable
+      );
+      if (unavailableIndex >= 0) links[unavailableIndex] = link;
+      else links.push(link);
+    }
+  }
+
+  // Invidious mirrors whichever YouTube link survived (parser, adapter, or
+  // fallback); derived, so it never costs an upstream call.
+  const youTubeLink = links.find(
+    link => link.type === Adapter.YouTube && !link.notAvailable
+  );
+  const invidiousLink =
+    searchAdapters.includes(Adapter.Invidious) && youTubeLink
+      ? toInvidiousLink(youTubeLink)
+      : null;
+  if (invidiousLink) links.push(invidiousLink);
 
   const parsedLinks = links
     .filter(link => searchAdapters.includes(link.type))
@@ -237,22 +303,59 @@ export const search = async <T extends SearchProps>({
       return a.type.localeCompare(b.type);
     });
 
-  // If headless is true, skip updatedMetadata and universal link shortening
+  // If headless is true, skip updatedMetadata
   if (headless) {
     return parsedLinks.map(link => link.url) as SearchReturn<T>;
   }
 
-  // Fetch updated metadata (for audio) from spotify if not parser type
+  // Fetch updated metadata (for audio and image) from Spotify if parser doesn't have them
   const spotifyLink = links.find(link => link.type === Adapter.Spotify);
-  const [parsedMetadata, shortLink] = await Promise.all([
-    parserType !== Adapter.Spotify && spotifyLink
+  logger.info(
+    `[${search.name}] Spotify link found: ${spotifyLink ? `${spotifyLink.url} (verified: ${spotifyLink.isVerified}, notAvailable: ${spotifyLink.notAvailable || false})` : 'none'}`
+  );
+
+  // Check if we need to fetch Spotify metadata
+  const needsSpotifyMetadata =
+    parserType !== Adapter.Spotify &&
+    spotifyLink &&
+    spotifyLink.isVerified &&
+    !spotifyLink.notAvailable &&
+    (!metadata.audio || !metadata.image); // Fetch if missing audio or image
+
+  const parsedMetadata = await (needsSpotifyMetadata
       ? (async () => {
+          logger.info(
+            `[${search.name}] Fetching Spotify metadata for verified available link: ${spotifyLink.url}`
+          );
           const spotifySearchParser = getSearchParser(spotifyLink.url);
-          return getSpotifyMetadata(spotifySearchParser.id, spotifyLink.url);
+          const spotifyMetadata = await getSpotifyMetadata(
+            spotifySearchParser.id,
+            spotifyLink.url
+          );
+          logger.info(
+            `[${search.name}] Spotify metadata - Title: "${spotifyMetadata.title}", Audio: ${spotifyMetadata.audio ? 'available' : 'none'}, Image: ${spotifyMetadata.image ? 'available' : 'none'}`
+          );
+          // Merge metadata: use Spotify's audio and image if original metadata doesn't have them
+          return {
+            ...metadata,
+            audio: metadata.audio || spotifyMetadata.audio,
+            image: metadata.image || spotifyMetadata.image,
+          };
         })()
-      : metadata,
-    shortenLink(universalLink),
-  ]);
+      : (async () => {
+          if (parserType !== Adapter.Spotify && spotifyLink) {
+            if (spotifyLink.notAvailable) {
+              logger.info(
+                `[${search.name}] Skipping not available Spotify link for metadata: ${spotifyLink.url}`
+              );
+            } else if (!spotifyLink.isVerified) {
+              logger.info(
+                `[${search.name}] Skipping unverified Spotify link for metadata: ${spotifyLink.url}`
+              );
+            }
+          }
+          return metadata;
+        })());
 
   const searchResult: SearchResult = {
     id,
@@ -262,7 +365,7 @@ export const search = async <T extends SearchProps>({
     image: parsedMetadata.image,
     audio: parsedMetadata.audio,
     source: searchParser.source,
-    universalLink: shortLink,
+    universalLink,
     links: parsedLinks,
   };
 

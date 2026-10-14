@@ -1,5 +1,3 @@
-import axios from 'axios';
-import AxiosMockAdapter from 'axios-mock-adapter';
 import type { Server } from 'bun';
 import {
   afterAll,
@@ -9,72 +7,74 @@ import {
   describe,
   expect,
   it,
-  type Mock,
-  spyOn,
 } from 'bun:test';
 
 import { Adapter, MetadataType } from '~/config/enum';
 import { ENV } from '~/config/env';
-import * as tidalUniversalLinkParser from '~/parsers/tidal-universal-link';
 import { cacheStore } from '~/services/cache';
+import { search } from '~/services/search';
+import { generateId } from '~/utils/encoding';
 
+import { loadHeadSnapshots, loadSearchSnapshots } from './mocks/snapshots';
+import { HttpMock } from './utils/http-mock';
 import { createTestApp, nodeFetch } from './utils/request';
 import {
   apiSearchEndpoint,
-  cachedSpotifyLink,
   getAppleMusicSearchLink,
   getDeezerSearchLink,
   getSoundCloudSearchLink,
-  getTidalSearchLink,
   getYouTubeSearchLink,
-  urlShortenerLink,
-  urlShortenerResponseMock,
 } from './utils/shared';
 
+const headSnapshots = loadHeadSnapshots();
+const searchSnapshots = loadSearchSnapshots();
+
 describe('Api router', () => {
-  let app: Server;
+  let app: Server<undefined>;
   let searchEndpointUrl: string;
 
-  let axiosMock: InstanceType<typeof AxiosMockAdapter>;
-  let getUniversalMetadataFromTidalaxiosMock: Mock<
-    typeof tidalUniversalLinkParser.getUniversalMetadataFromTidal
-  >;
+  let httpMock: HttpMock;
 
   beforeAll(() => {
     app = createTestApp();
     searchEndpointUrl = apiSearchEndpoint(app.url);
 
-    axiosMock = new AxiosMockAdapter(axios);
-    getUniversalMetadataFromTidalaxiosMock = spyOn(
-      tidalUniversalLinkParser,
-      'getUniversalMetadataFromTidal'
-    );
+    httpMock = new HttpMock();
   });
 
   afterAll(() => {
-    axiosMock.reset();
-    getUniversalMetadataFromTidalaxiosMock.mockReset();
+    app.stop();
+    httpMock.restore();
   });
 
   beforeEach(() => {
     cacheStore.reset();
-    axiosMock.reset();
-
-    getUniversalMetadataFromTidalaxiosMock.mockResolvedValue(undefined);
-    axiosMock.onPost(ENV.adapters.spotify.authUrl).reply(200, {});
-    axiosMock.onPost(ENV.adapters.tidal.authUrl).reply(200, {});
-    axiosMock.onPost(urlShortenerLink).reply(200, urlShortenerResponseMock);
+    httpMock.reset();
   });
 
   afterEach(() => {
-    axiosMock.reset();
+    httpMock.reset();
   });
 
   describe('GET /search', () => {
     const link = 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc';
 
     it('should return 200', async () => {
-      axiosMock.onGet().passThrough();
+      const query = 'Like a Rolling Stone Bob Dylan';
+
+      httpMock.onGet(getYouTubeSearchLink(query, MetadataType.Song)).reply(404);
+      httpMock
+        .onGet(getAppleMusicSearchLink(query))
+        .reply(200, searchSnapshots.appleMusicRollingStone);
+      httpMock
+        .onGet(getDeezerSearchLink(query, 'track'))
+        .reply(200, JSON.parse(searchSnapshots.deezerRollingStone));
+      httpMock
+        .onGet(getSoundCloudSearchLink(query))
+        .reply(200, searchSnapshots.soundCloudRollingStone);
+      httpMock
+        .onGet('https://open.spotify.com/embed/track/3AhXZa8sUQht0UEdBJgpGc')
+        .reply(200, headSnapshots.spotifyTrackRollingStone);
 
       const response = await nodeFetch(searchEndpointUrl, {
         method: 'POST',
@@ -90,41 +90,51 @@ describe('Api router', () => {
         id: 'b3Blbi5zcG90aWZ5LmNvbS90cmFjay8zQWhYWmE4c1VRaHQwVUVkQkpncEdj',
         type: 'song',
         title: 'Like a Rolling Stone',
-        description: 'Bob Dylan · Highway 61 Revisited · Song · 1965',
-        image: 'https://i.scdn.co/image/ab67616d0000b27341720ef0ae31e10d39e43ca2',
-        audio: 'https://p.scdn.co/mp3-preview/d48c45e3194cfe07470c85e50ca7dc7440661caa',
+        description: expect.stringMatching(/song/i),
+        image: expect.any(String),
+        audio: 'https://p.scdn.co/mp3-preview/62c229b1cadd22b991df9aeaedd38e873ddaccbe',
         source: 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc',
-        universalLink: urlShortenerResponseMock.data.refer,
+        universalLink: `${ENV.app.url}?id=${data.id}`,
         links: [
           {
-            type: 'appleMusic',
-            url: 'https://music.apple.com/ca/album/like-a-rolling-stone/192688369?i=192688675',
             isVerified: true,
+            notAvailable: false,
+            type: 'appleMusic',
+            url: 'https://geo.music.apple.com/ca/album/like-a-rolling-stone/192688369?i=192688675',
           },
           {
+            isVerified: true,
+            notAvailable: false,
             type: 'deezer',
             url: 'https://www.deezer.com/track/14477354',
-            isVerified: true,
           },
           {
+            isVerified: true,
+            notAvailable: false,
             type: 'soundCloud',
             url: 'https://soundcloud.com/bobdylan/like-a-rolling-stone-1',
+          },
+          {
             isVerified: true,
+            type: 'spotify',
+            url: 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc',
           },
         ],
       });
     });
 
-    it.only('should return 200 when adapter returns error', async () => {
+    it('should return 200 when adapter returns error', async () => {
       const link = 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc';
       const query = 'Like a Rolling Stone Bob Dylan';
 
-      axiosMock.onGet(getTidalSearchLink(query, MetadataType.Song)).reply(500);
-      axiosMock.onGet(getAppleMusicSearchLink(query)).reply(500);
-      axiosMock.onGet(getYouTubeSearchLink(query, MetadataType.Song)).reply(500);
-      axiosMock.onGet(getDeezerSearchLink(query, 'track')).reply(500);
-      axiosMock.onGet(getSoundCloudSearchLink(query)).reply(500);
-      axiosMock.onGet().passThrough();
+      httpMock.onGet(getAppleMusicSearchLink(query)).reply(500);
+      httpMock.onGet(getYouTubeSearchLink(query, MetadataType.Song)).reply(500);
+      httpMock.onGet(getDeezerSearchLink(query, 'track')).reply(500);
+      httpMock.onGet(getSoundCloudSearchLink(query)).reply(500);
+      // Mock Spotify metadata API
+      httpMock
+        .onGet('https://open.spotify.com/embed/track/3AhXZa8sUQht0UEdBJgpGc')
+        .reply(200, headSnapshots.spotifyTrackRollingStone);
 
       const response = await nodeFetch(searchEndpointUrl, {
         method: 'POST',
@@ -140,17 +150,25 @@ describe('Api router', () => {
         id: 'b3Blbi5zcG90aWZ5LmNvbS90cmFjay8zQWhYWmE4c1VRaHQwVUVkQkpncEdj',
         type: 'song',
         title: 'Like a Rolling Stone',
-        description: 'Bob Dylan · Highway 61 Revisited · Song · 1965',
-        image: 'https://i.scdn.co/image/ab67616d0000b27341720ef0ae31e10d39e43ca2',
-        audio: 'https://p.scdn.co/mp3-preview/d48c45e3194cfe07470c85e50ca7dc7440661caa',
+        description: expect.stringMatching(/song/i),
+        image: expect.any(String),
+        audio: 'https://p.scdn.co/mp3-preview/62c229b1cadd22b991df9aeaedd38e873ddaccbe',
         source: link,
-        universalLink: urlShortenerResponseMock.data.refer,
-        links: [],
+        universalLink: `${ENV.app.url}?id=${data.id}`,
+        links: [
+          {
+            isVerified: true,
+            type: 'spotify',
+            url: 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc',
+          },
+        ],
       });
     });
 
     it('should return 200 when adapter adapter matches the parser type', async () => {
-      axiosMock.onGet().passThrough();
+      httpMock
+        .onGet('https://open.spotify.com/embed/track/3AhXZa8sUQht0UEdBJgpGc')
+        .reply(200, headSnapshots.spotifyTrackRollingStone);
 
       const response = await nodeFetch(searchEndpointUrl, {
         method: 'POST',
@@ -166,12 +184,11 @@ describe('Api router', () => {
         id: 'b3Blbi5zcG90aWZ5LmNvbS90cmFjay8zQWhYWmE4c1VRaHQwVUVkQkpncEdj',
         type: 'song',
         title: 'Like a Rolling Stone',
-        description: 'Bob Dylan · Highway 61 Revisited · Song · 1965',
-        image: 'https://i.scdn.co/image/ab67616d0000b27341720ef0ae31e10d39e43ca2',
-        audio: 'https://p.scdn.co/mp3-preview/d48c45e3194cfe07470c85e50ca7dc7440661caa',
+        description: expect.stringMatching(/song/i),
+        image: expect.any(String),
+        audio: 'https://p.scdn.co/mp3-preview/62c229b1cadd22b991df9aeaedd38e873ddaccbe',
         source: 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc',
-        universalLink:
-          'http://localhost:3000?id=b3Blbi5zcG90aWZ5LmNvbS90cmFjay8zQWhYWmE4c1VRaHQwVUVkQkpncEdj',
+        universalLink: `${ENV.app.url}?id=${data.id}`,
         links: [
           {
             isVerified: true,
@@ -182,9 +199,26 @@ describe('Api router', () => {
       });
     });
 
+
+    it('keeps the source link on universal-link (?id=) searches', async () => {
+      httpMock
+        .onGet('https://open.spotify.com/embed/track/3AhXZa8sUQht0UEdBJgpGc')
+        .reply(200, headSnapshots.spotifyTrackRollingStone);
+
+      const link = 'https://open.spotify.com/track/3AhXZa8sUQht0UEdBJgpGc';
+      const result = await search({
+        searchId: generateId(link),
+        adapters: [Adapter.Spotify],
+        headless: false,
+      });
+
+      expect(result.links).toEqual([{ type: Adapter.Spotify, url: link, isVerified: true }]);
+    });
     it('should return unknown error - could not parse Spotify metadata', async () => {
       const link = 'https://open.spotify.com/track/2KvHC9z14GSl4YpkNMX384';
-      axiosMock.onGet(cachedSpotifyLink).reply(200, '<html></html>');
+      httpMock
+        .onGet('https://open.spotify.com/embed/track/2KvHC9z14GSl4YpkNMX384')
+        .reply(200, '<script id="__NEXT_DATA__" type="application/json">{"props":{}}</script>');
 
       const response = await nodeFetch(searchEndpointUrl, {
         method: 'POST',

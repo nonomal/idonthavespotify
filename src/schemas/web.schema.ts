@@ -5,13 +5,15 @@ import { ALLOWED_LINKS_REGEX } from '~/config/constants';
 export const indexRouteSchema = z.object({
   query: z.object({
     id: z.string().min(1, { message: 'Invalid search id' }).optional(),
+    rows: z.string().optional(),
   }),
 });
 
 export const searchRouteSchema = z.object({
   body: z.object({
     link: z.string().regex(new RegExp(ALLOWED_LINKS_REGEX), {
-      message: 'Invalid link, please try with Spotify or Youtube links.',
+      message:
+        'Invalid link, please try with Spotify, YouTube, Apple Music, Deezer, SoundCloud, Tidal, Qobuz, Bandcamp, Pandora, JioSaavn, Apple Podcasts, or Google Music Share links.',
     }),
   }),
 });

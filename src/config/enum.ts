@@ -5,6 +5,14 @@ export enum StreamingService {
   Deezer = 'deezer',
   SoundCloud = 'soundCloud',
   Tidal = 'tidal',
+  Google = 'google',
+  Qobuz = 'qobuz',
+  Bandcamp = 'bandcamp',
+  Pandora = 'pandora',
+  Jiosaavn = 'jiosaavn',
+  ApplePodcasts = 'applePodcasts',
+  PodcastFeed = 'podcastFeed',
+  Invidious = 'invidious',
 }
 
 export enum Adapter {
@@ -14,6 +22,13 @@ export enum Adapter {
   Deezer = StreamingService.Deezer,
   SoundCloud = StreamingService.SoundCloud,
   Tidal = StreamingService.Tidal,
+  Qobuz = StreamingService.Qobuz,
+  Bandcamp = StreamingService.Bandcamp,
+  Pandora = StreamingService.Pandora,
+  Jiosaavn = StreamingService.Jiosaavn,
+  ApplePodcasts = StreamingService.ApplePodcasts,
+  PodcastFeed = StreamingService.PodcastFeed,
+  Invidious = StreamingService.Invidious,
 }
 
 export enum Parser {
@@ -23,6 +38,12 @@ export enum Parser {
   Deezer = StreamingService.Deezer,
   SoundCloud = StreamingService.SoundCloud,
   Tidal = StreamingService.Tidal,
+  Google = StreamingService.Google,
+  Qobuz = StreamingService.Qobuz,
+  Bandcamp = StreamingService.Bandcamp,
+  Pandora = StreamingService.Pandora,
+  Jiosaavn = StreamingService.Jiosaavn,
+  ApplePodcasts = StreamingService.ApplePodcasts,
 }
 
 export type StreamingServiceType = Adapter & Parser;

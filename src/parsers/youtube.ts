@@ -1,11 +1,10 @@
-import axios from 'axios';
-
 import { MetadataType, Parser } from '~/config/enum';
 import { ENV } from '~/config/env';
 import { cacheSearchMetadata, getCachedSearchMetadata } from '~/services/cache';
 import type { SearchMetadata } from '~/services/search';
 import HttpClient from '~/utils/http-client';
 import { logger } from '~/utils/logger';
+import { getServiceGuard } from '~/utils/service-guard';
 
 interface YoutubeDataResponse {
   kind: string;
@@ -36,7 +35,11 @@ const METADATA_TO_YOUTUBE_ENDPOINT = {
 };
 
 export const getYouTubeMetadata = async (id: string, source: string) => {
-  let link = `${source}?v=${id}`;
+  const sourceUrl = new URL(source);
+  if (!sourceUrl.searchParams.has('v')) {
+    sourceUrl.searchParams.set('v', id);
+  }
+  let link = sourceUrl.toString();
 
   if (link.includes('youtu.be/')) {
     link = await resolveShortYouTubeLink(link);
@@ -46,6 +49,11 @@ export const getYouTubeMetadata = async (id: string, source: string) => {
   if (cached) {
     logger.info(`[YouTube] (${id}) metadata cache hit`);
     return cached;
+  }
+
+  const guard = getServiceGuard('youTube');
+  if (!guard.acquire()) {
+    throw new Error('[YouTube] service temporarily unavailable');
   }
 
   try {
@@ -67,6 +75,7 @@ export const getYouTubeMetadata = async (id: string, source: string) => {
     url.search = params.toString();
 
     const response = await HttpClient.get<YoutubeDataResponse>(url.toString());
+    guard.recordSuccess();
     const item = response?.items?.[0];
     if (!item) {
       throw new Error(
@@ -82,8 +91,17 @@ export const getYouTubeMetadata = async (id: string, source: string) => {
     const { title, description, thumbnails } = snippet;
     const image = thumbnails?.url;
 
+    const processedTitle = title
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    logger.info(
+      `[YouTube] Original title: "${title}". Processed title: "${processedTitle}"`
+    );
+
     const metadata: SearchMetadata = {
-      title,
+      title: processedTitle,
       description,
       type: searchType,
       image,
@@ -93,12 +111,16 @@ export const getYouTubeMetadata = async (id: string, source: string) => {
 
     return metadata;
   } catch (err) {
+    guard.recordFailure();
     throw new Error(`[${getYouTubeMetadata.name}] (${link}) ${err}`);
   }
 };
 
 export const getYouTubeQueryFromMetadata = (metadata: SearchMetadata) => {
-  let query = metadata.title.replace(/\s*\([^)]*\)/g, '').trim();
+  let query = metadata.title
+    .replace(/\s*\([^)]*\)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   if (metadata.type === MetadataType.Song) {
     const matches = metadata.description?.match(/(?:·|&)\s*([^·&℗]+)/g);
@@ -116,16 +138,17 @@ export const getYouTubeQueryFromMetadata = (metadata: SearchMetadata) => {
     query = `${query} playlist`;
   }
 
+  logger.info(`[YouTube] Final search query: "${query}"`);
   return query;
 };
 
 function parseYouTubeLink(link: string) {
   const url = new URL(link);
 
-  if (url.searchParams.has('list')) {
+  if (url.pathname.includes('list')) {
     return {
-      searchType: MetadataType.Playlist,
-      resourceId: url.searchParams.get('list')!,
+      searchType: MetadataType.Album,
+      resourceId: (url.searchParams.get('list') || url.searchParams.get('v'))!,
     };
   }
 
@@ -146,16 +169,6 @@ function parseYouTubeLink(link: string) {
 }
 
 async function resolveShortYouTubeLink(shortLink: string): Promise<string> {
-  const response = await axios.request({
-    method: 'GET',
-    url: shortLink,
-    maxRedirects: 1,
-  });
-
-  const path =
-    response.request.path ||
-    response.request._currentUrl ||
-    response.request._headers?.path;
-
-  return `https://youtube.com${path}` || shortLink;
+  const finalUrl = await HttpClient.resolveRedirect(shortLink, 1);
+  return finalUrl || shortLink;
 }

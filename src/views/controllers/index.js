@@ -1,8 +1,9 @@
-import '../css/index.css';
-
 import { Application } from '@hotwired/stimulus';
-import { registerControllers } from 'stimulus-vite-helpers';
+
+import HomeController from './home_controller.js';
+import SearchCardController from './search_card_controller.js';
 
 const application = Application.start();
-const controllers = import.meta.glob('./**/*_controller.js', { eager: true });
-registerControllers(application, controllers);
+
+application.register('home', HomeController);
+application.register('search-card', SearchCardController);

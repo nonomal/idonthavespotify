@@ -3,9 +3,31 @@ import { Howl } from 'howler';
 
 import { copyToClipboard } from './helpers';
 
+/**
+ * @typedef {Object} ControllerValues
+ * @property {String} id
+ * @property {String} universalLink
+ * @property {String} audio
+ */
+
+/**
+ * @typedef {Object} ControllerTargets
+ * @property {HTMLElement} icon
+ * @property {HTMLElement} audioProgress
+ */
+
 export default class extends Controller {
+  /** @type {ControllerValues} */
   static values = { id: String, universalLink: String, audio: String };
+
+  /** @type {string[]} */
   static targets = ['icon', 'audioProgress'];
+
+  /** @type {Howl | undefined} */
+  soundPlayer;
+
+  /** @type {number | undefined} */
+  audioProgressInterval;
 
   async connect() {
     this.soundPlayer = new Howl({
@@ -26,7 +48,24 @@ export default class extends Controller {
     this.soundPlayer.on('pause', () => {
       this.stopProgressUpdate();
     });
+
+    // A new search hides this card: stop the preview with it.
+    document.addEventListener('htmx:before:request', this.pauseForSearch);
   }
+
+  disconnect() {
+    document.removeEventListener('htmx:before:request', this.pauseForSearch);
+    this.stopProgressUpdate();
+    this.soundPlayer?.unload();
+  }
+
+  pauseForSearch = () => {
+    // `playing()` is false while a play is queued on a loading preview.
+    const player = this.soundPlayer;
+    if (!player || (!player.playing() && player.state() !== 'loading')) return;
+    player.stop();
+    this.updateAudioPreviewIcon(true);
+  };
 
   /**
    * Shares the universal link using the Web Share API or copies it to the clipboard.
@@ -42,7 +81,7 @@ export default class extends Controller {
     try {
       if (navigator.share) {
         await navigator.share({
-          title: 'idonthavespotify',
+          title: `I Don't Have Spotify`,
           url: universalLink,
         });
         return;
@@ -68,32 +107,33 @@ export default class extends Controller {
   }
 
   /**
-   * Starts updating the audio progress bar.
+   * Starts updating the audio progress ring (2πr for r=20 ≈ 125.66).
    */
   startAudioProgress() {
-    this.audioProgressTarget.parentNode.classList.remove('hidden');
     this.audioProgressInterval = setInterval(() => {
       const duration = this.soundPlayer.duration();
       const seek = this.soundPlayer.seek();
-      const progress = (seek / duration) * 100;
-      this.audioProgressTarget.style.width = `${progress}%`;
-    }, 10);
+      const progress = duration > 0 ? seek / duration : 0;
+      this.audioProgressTarget.setAttribute(
+        'stroke-dashoffset',
+        String(125.66 * (1 - progress))
+      );
+    }, 100);
   }
 
   /**
-   * Stops updating the audio progress bar.
+   * Stops updating the audio progress ring.
    */
   stopProgressUpdate() {
     clearInterval(this.audioProgressInterval);
   }
 
   /**
-   * Resets the audio progress bar.
+   * Resets the audio progress ring.
    */
   resetProgressBar() {
     clearInterval(this.audioProgressInterval);
-    this.audioProgressTarget.style.width = '0%';
-    this.audioProgressTarget.parentNode.classList.add('hidden');
+    this.audioProgressTarget.setAttribute('stroke-dashoffset', '125.66');
   }
 
   /**

@@ -4,48 +4,42 @@ interface MainLayoutProps {
   title?: string;
   description?: string;
   image?: string;
-  isProduction: boolean;
+  audio?: string;
   children: typeof Fragment;
 }
 
-const MainLayout = ({
-  title,
-  description,
-  image,
-  isProduction,
-  children,
-}: MainLayoutProps) => {
+const MainLayout = ({ title, description, image, audio, children }: MainLayoutProps) => {
   return (
     <div>
       <Helmet>
         <html lang="en" />
         <meta charset="utf-8" />
-        <title>I don't have spotify</title>
+        <title>I Don't Have Spotify</title>
         <meta
           name="viewport"
-          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no"
+          content="width=device-width, initial-scale=1.0"
         />
         <link rel="icon" href="/assets/favicon.ico" />
         <meta name="theme-color" content="#000000" />
 
         <meta
           name="description"
-          content="Effortlessly convert Spotify links to your preferred streaming service"
+          content="Turn any Spotify, Apple Music, YouTube, Deezer, Tidal, SoundCloud, Qobuz, Pandora, Bandcamp, JioSaavn, or Apple Podcasts link into a shareable preview across the streaming services your friends use."
         />
         <meta
           name="keywords"
-          content="Spotify,YouTube,Deezer,Apple Music,Tidal,SoundCloud,converter,search,listen"
+          content="Spotify,YouTube,Deezer,Apple Music,Tidal,SoundCloud,converter,search,listen,JioSaavn,Apple Podcasts"
         />
 
         <meta property="og:type" content="website" />
-        <meta property="og:url" content="https://idonthavespotify.donado.co" />
+        <meta property="og:url" content="https://idonthavespotify.sjdonado.com" />
         <meta property="og:site_name" content="I Don't Have Spotify" />
         <meta property="og:title" content={title ?? "I Don't Have Spotify"} />
         <meta
           property="og:description"
           content={
             description ??
-            'Effortlessly convert Spotify links to your preferred streaming service'
+            'Turn any Spotify, Apple Music, YouTube, Deezer, Tidal, SoundCloud, Qobuz, Pandora, Bandcamp, or JioSaavn link into a shareable preview across the streaming services your friends use.'
           }
         />
         <meta
@@ -56,28 +50,28 @@ const MainLayout = ({
           }
         />
         <meta property="og:image:alt" content="I Don't Have Spotify favicon" />
+        {/* Spec-compliant clients may offer the preview; Discord and WhatsApp
+            ignore og:audio today (checked 2026-10-04). */}
+        {audio && <meta property="og:audio" content={audio} />}
 
         <link
           rel="stylesheet"
           href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css"
         />
         <link href="https://fonts.cdnfonts.com/css/poppins" rel="stylesheet" />
-        <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+        <script
+          src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"
+          integrity="sha384-BvJpBiO8Kh31EqtJe5DRIeWrHWnCGkwytKs9NKFi86Hhw96dEqdEMzZDeK9iEGTc"
+          crossorigin="anonymous"
+        ></script>
 
         <link href="/assets/index.min.css" rel="stylesheet" />
       </Helmet>
 
-      <body class="h-screen bg-black font-light text-white">{children}</body>
+      <body class="bg-black font-light text-white">{children}</body>
 
       <Helmet footer>
-        {isProduction && (
-          <script
-            defer
-            src="https://umami.sjdonado.com/script.js"
-            data-website-id="da89a7a2-dd17-4c7f-b7ff-de28a7046a0e"
-          ></script>
-        )}
-        <script src="assets/index.js" />
+        <script type="module" src="assets/index.js" />
       </Helmet>
     </div>
   );

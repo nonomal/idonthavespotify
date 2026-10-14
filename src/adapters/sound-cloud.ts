@@ -1,14 +1,23 @@
-import { RESPONSE_COMPARE_MIN_SCORE } from '~/config/constants';
-import { Adapter, MetadataType } from '~/config/enum';
+import {
+  RESPONSE_COMPARE_MIN_INCLUSION_SCORE,
+  RESPONSE_COMPARE_MIN_SCORE,
+} from '~/config/constants';
+import { Adapter, MetadataType, Parser } from '~/config/enum';
 import { ENV } from '~/config/env';
 import { cacheSearchResultLink, getCachedSearchResultLink } from '~/services/cache';
-import { SearchMetadata, SearchResultLink } from '~/services/search';
+import type { SearchMetadata, SearchResultLink } from '~/services/search';
 import { getResultWithBestScore } from '~/utils/compare';
 import HttpClient from '~/utils/http-client';
 import { logger } from '~/utils/logger';
 import { getCheerioDoc } from '~/utils/scraper';
+import { getServiceGuard } from '~/utils/service-guard';
 
-export async function getSoundCloudLink(query: string, metadata: SearchMetadata) {
+export async function getSoundCloudLink(
+  query: string,
+  metadata: SearchMetadata,
+  sourceParser: Parser,
+  sourceId: string
+) {
   if (metadata.type === MetadataType.Show) {
     return null;
   }
@@ -20,14 +29,25 @@ export async function getSoundCloudLink(query: string, metadata: SearchMetadata)
   const url = new URL(`${ENV.adapters.soundCloud.baseUrl}/search`);
   url.search = params.toString();
 
-  const cache = await getCachedSearchResultLink(url);
+  const cache = await getCachedSearchResultLink(
+    Adapter.SoundCloud,
+    sourceParser,
+    sourceId
+  );
   if (cache) {
     logger.info(`[SoundCloud] (${url}) cache hit`);
     return cache;
   }
 
+  const guard = getServiceGuard('soundCloud');
+  if (!guard.acquire()) {
+    logger.warn('[SoundCloud] service guard: request blocked');
+    return null;
+  }
+
   try {
     const html = await HttpClient.get<string>(url.toString());
+    guard.recordSuccess();
     const doc = getCheerioDoc(html);
 
     // Extract contents of noscript
@@ -41,13 +61,24 @@ export async function getSoundCloudLink(query: string, metadata: SearchMetadata)
     const searchResultLink = {
       type: Adapter.SoundCloud,
       url: `${ENV.adapters.soundCloud.baseUrl}${href}`,
-      isVerified: score > RESPONSE_COMPARE_MIN_SCORE,
+      isVerified: score >= RESPONSE_COMPARE_MIN_SCORE,
+      notAvailable: score < RESPONSE_COMPARE_MIN_INCLUSION_SCORE,
     } as SearchResultLink;
 
-    await cacheSearchResultLink(url, searchResultLink);
+    logger.info(
+      `[SoundCloud] Result score: ${score.toFixed(3)} (verified: ${searchResultLink.isVerified ? 'yes' : 'no'}, available: ${!searchResultLink.notAvailable ? 'yes' : 'no'})`
+    );
+
+    await cacheSearchResultLink(
+      Adapter.SoundCloud,
+      sourceParser,
+      sourceId,
+      searchResultLink
+    );
 
     return searchResultLink;
   } catch (err) {
+    guard.recordFailure();
     logger.error(`[SoundCloud] (${url}) ${err}`);
     return null;
   }

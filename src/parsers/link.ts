@@ -1,6 +1,12 @@
 import {
   APPLE_MUSIC_LINK_REGEX,
+  APPLE_PODCASTS_LINK_REGEX,
+  BANDCAMP_LINK_REGEX,
   DEEZER_LINK_REGEX,
+  GOOGLE_LINK_REGEX,
+  JIOSAAVN_LINK_REGEX,
+  PANDORA_LINK_REGEX,
+  QOBUZ_LINK_REGEX,
   SOUNDCLOUD_LINK_REGEX,
   SPOTIFY_LINK_REGEX,
   TIDAL_LINK_REGEX,
@@ -62,7 +68,9 @@ export const getSearchParser = (link?: string, searchId?: string) => {
   }
 
   const soundCloudMatch = source.match(SOUNDCLOUD_LINK_REGEX);
-  const soundCloudId = soundCloudMatch ? soundCloudMatch[3] || soundCloudMatch[2] : null;
+  const soundCloudId = soundCloudMatch
+    ? soundCloudMatch[3] || soundCloudMatch[2] || soundCloudMatch[4]
+    : null;
   if (soundCloudId) {
     id = soundCloudId;
     type = Parser.SoundCloud;
@@ -74,16 +82,55 @@ export const getSearchParser = (link?: string, searchId?: string) => {
     type = Parser.Tidal;
   }
 
+  const qobuzId = source.match(QOBUZ_LINK_REGEX)?.[5];
+  if (qobuzId) {
+    id = qobuzId;
+    type = Parser.Qobuz;
+  }
+
+  const bandcampId = source.match(BANDCAMP_LINK_REGEX)?.[1];
+  if (bandcampId) {
+    id = bandcampId;
+    type = Parser.Bandcamp;
+  }
+
+  const pandoraId = source.match(PANDORA_LINK_REGEX)?.[3];
+  if (pandoraId) {
+    id = pandoraId;
+    type = Parser.Pandora;
+  }
+
+  const jiosaavnId = source.match(JIOSAAVN_LINK_REGEX)?.[3];
+  if (jiosaavnId) {
+    id = jiosaavnId;
+    type = Parser.Jiosaavn;
+  }
+
+  const applePodcastsMatch = source.match(APPLE_PODCASTS_LINK_REGEX);
+  if (applePodcastsMatch) {
+    // Episode links carry the episode id in ?i=; show links resolve by
+    // the collection id. The parser re-reads the full source anyway.
+    id = applePodcastsMatch[2].match(/[?&]i=(\d+)/)?.[1] ?? applePodcastsMatch[1];
+    type = Parser.ApplePodcasts;
+  }
+
+  const googleMatch = source.match(GOOGLE_LINK_REGEX);
+  if (googleMatch) {
+    // For gasearch URLs, capture group [1] is undefined, so use the full path
+    // For share.google URLs, capture group [1] contains the share ID
+    id = googleMatch[1] || source;
+    type = Parser.Google;
+  }
+
   if (!id || !type) {
     throw new Error('Service id could not be extracted from source.');
   }
 
-  const parsedSource = new URL(source);
-
   const searchParser = {
     id,
     type,
-    source: [parsedSource.origin, parsedSource.pathname].join(''),
+    // For Apple Music, preserve query parameters (especially the 'i' parameter for songs)
+    source,
   } as SearchParser;
 
   return searchParser;

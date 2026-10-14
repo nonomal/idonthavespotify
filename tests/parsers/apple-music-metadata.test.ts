@@ -1,0 +1,236 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+
+import { MetadataType } from '~/config/enum';
+import { getAppleMusicMetadata, getAppleMusicQueryFromMetadata } from '~/parsers/apple-music';
+import { cacheStore } from '~/services/cache';
+
+import { HttpMock } from '../utils/http-mock';
+
+describe('Apple Music metadata catalog fallback', () => {
+  let httpMock: HttpMock;
+
+  beforeAll(() => {
+    httpMock = new HttpMock();
+  });
+
+  beforeEach(() => {
+    cacheStore.reset();
+    httpMock.reset();
+  });
+
+  afterAll(() => {
+    httpMock.restore();
+  });
+
+  it('picks the same-album song, not the first hit', async () => {
+    const link = 'https://music.apple.com/us/album/bohemian-rhapsody/1440650428?i=1440650450';
+    httpMock
+      .onGet(link)
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Apple&#160;Music Web Player" /></head></html>'
+      );
+    httpMock.onGet(/music\.apple\.com\/us\/search\?term=.*&l=en-GB$/).reply(
+      200,
+      `<div data-testid="top-search-result" aria-label="Under Pressure · Song · Queen">
+         <a data-testid="click-action" href="https://music.apple.com/us/album/greatest-hits-i-ii-iii/111?i=222"></a>
+         <picture><source srcset="https://example.com/wrong-110.jpg 110w, https://example.com/wrong-220.jpg 220w" /></picture>
+       </div>
+       <div data-testid="top-search-result" aria-label="Bohemian Rhapsody · Song · Queen">
+         <a data-testid="click-action" href="https://music.apple.com/us/album/bohemian-rhapsody/1440650428?i=1440650450"></a>
+         <picture><source srcset="https://example.com/right-110.jpg 110w, https://example.com/right-220.jpg 220w" /></picture>
+       </div>`
+    );
+
+    const metadata = await getAppleMusicMetadata('catalog-song-ambiguity', link);
+
+    expect(metadata).toEqual({
+      title: 'Bohemian Rhapsody',
+      description: 'Queen · Song',
+      type: MetadataType.Song,
+      image: 'https://example.com/right-220.jpg',
+      audio: undefined,
+    });
+  });
+
+  it('resolves songs from non-English storefronts by song ID', async () => {
+    const link =
+      'https://music.apple.com/de/album/complicated/315025768?i=315025823&l=en-GB';
+    httpMock
+      .onGet(link)
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Apple&#160;Music Web Player" /></head></html>'
+      );
+    httpMock.onGet('music.apple.com/de/search').reply(
+      200,
+      `<div data-testid="top-search-result" aria-label="Losing Grip · Titel · Avril Lavigne">
+         <a data-testid="click-action" href="https://music.apple.com/de/album/losing-grip/315025768?i=315025793"></a>
+       </div>
+       <div data-testid="top-search-result" aria-label="Complicated · Titel · Avril Lavigne">
+         <a data-testid="click-action" href="https://music.apple.com/de/album/complicated/315025768?i=315025823"></a>
+         <picture><source srcset="https://example.com/complicated-110.jpg 110w, https://example.com/complicated-220.jpg 220w" /></picture>
+       </div>
+       <div data-testid="top-search-result" aria-label="Let Go · Album · Avril Lavigne">
+         <a data-testid="click-action" href="https://music.apple.com/de/album/let-go/315025768"></a>
+       </div>`
+    );
+
+    const metadata = await getAppleMusicMetadata('catalog-song-de', link);
+
+    expect(metadata).toEqual({
+      title: 'Complicated',
+      description: 'Avril Lavigne · Song',
+      type: MetadataType.Song,
+      image: 'https://example.com/complicated-220.jpg',
+      audio: undefined,
+    });
+  });
+
+  it('resolves artists by ID match, not name', async () => {
+    const link = 'https://music.apple.com/us/artist/j-cole/73705833';
+    httpMock
+      .onGet(link)
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Apple&#160;Music Web Player" /></head></html>'
+      );
+    httpMock.onGet('music.apple.com/us/search').reply(
+      200,
+      `<div data-testid="top-search-result" aria-label="J. Cole · Artist">
+         <a data-testid="click-action" href="https://music.apple.com/us/artist/not-j-cole/123"></a>
+       </div>
+       <div data-testid="top-search-result" aria-label="J. Cole · Artist">
+         <a data-testid="click-action" href="https://music.apple.com/us/artist/j-cole/73705833"></a>
+         <picture><source srcset="https://example.com/jcole-110.jpg 110w" /></picture>
+       </div>`
+    );
+
+    const metadata = await getAppleMusicMetadata('catalog-artist-id', link);
+
+    expect(metadata).toEqual({
+      title: 'J. Cole',
+      description: 'Artist',
+      type: MetadataType.Artist,
+      image: 'https://example.com/jcole-110.jpg',
+      audio: undefined,
+    });
+  });
+
+  it('resolves albums straight from oEmbed', async () => {
+    const link = 'https://music.apple.com/us/album/nevermind/1440783617';
+    httpMock
+      .onGet(link)
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Apple&#160;Music Web Player" /></head></html>'
+      );
+    httpMock.onGet('music.apple.com/api/oembed').reply(200, {
+      title: 'Nevermind',
+      author_name: 'Nirvana',
+      thumbnail_url: 'https://example.com/300x300bb.jpg',
+    });
+
+    const metadata = await getAppleMusicMetadata('catalog-album-oembed', link);
+
+    expect(metadata).toEqual({
+      title: 'Nevermind',
+      description: 'Nirvana · Album',
+      type: MetadataType.Album,
+      image: 'https://example.com/600x600bb.jpg',
+      audio: undefined,
+    });
+  });
+
+  it('keeps the original error when the catalog yields nothing', async () => {
+    const link = 'https://music.apple.com/us/album/bohemian-rhapsody/1440650428?i=1440650450';
+    httpMock.onGet(link).reply(200, '<html><body>bot wall</body></html>');
+    httpMock.onGet('music.apple.com/us/search').reply(200, '<div></div>');
+
+    await expect(getAppleMusicMetadata('catalog-broken', link)).rejects.toThrow(
+      'AppleMusic metadata not found'
+    );
+  });
+});
+
+describe('Apple Music subtitle and query', () => {
+  let httpMock: HttpMock;
+
+  beforeAll(() => {
+    httpMock = new HttpMock();
+  });
+
+  beforeEach(() => {
+    cacheStore.reset();
+    httpMock.reset();
+  });
+
+  afterAll(() => {
+    httpMock.restore();
+  });
+
+  it('shows the artist and type as the subtitle, not the title again', async () => {
+    const link = 'https://music.apple.com/de/album/poem-to-a-horse/1?i=2';
+    httpMock
+      .onGet(link)
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Poem to a Horse by Shakira on Apple Music" /><meta property="og:image" content="https://example.com/cover.jpg" /></head></html>'
+      );
+
+    const metadata = await getAppleMusicMetadata('apple-subtitle', link);
+
+    expect(metadata).toMatchObject({
+      title: 'Poem to a Horse',
+      description: 'Shakira · Song',
+      type: MetadataType.Song,
+    });
+    expect(getAppleMusicQueryFromMetadata(metadata)).toBe('Poem to a Horse Shakira');
+  });
+
+  it('requests the English page and splits at the last "by"', async () => {
+    const link = 'https://music.apple.com/de/album/stand-by-me/3?i=4&l=de-DE';
+    httpMock
+      .onGet('music.apple.com/de/album/stand-by-me/3?i=4&l=en-GB')
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Stand by Me by Ben E. King on Apple Music" /><meta property="og:image" content="https://example.com/cover.jpg" /></head></html>'
+      );
+
+    const metadata = await getAppleMusicMetadata('apple-english', link);
+
+    expect(metadata).toMatchObject({ title: 'Stand by Me', description: 'Ben E. King · Song' });
+  });
+
+  it('keeps a playlist name whole even when it contains "by"', async () => {
+    const link = 'https://music.apple.com/us/playlist/chill-by-the-pool/pl.123';
+    httpMock
+      .onGet(link)
+      .reply(
+        200,
+        '<html><head><meta property="og:title" content="Chill by the Pool on Apple Music" /><meta property="og:image" content="https://example.com/cover.jpg" /></head></html>'
+      );
+
+    const metadata = await getAppleMusicMetadata('apple-playlist-by', link);
+
+    expect(metadata).toMatchObject({ title: 'Chill by the Pool', description: 'Playlist' });
+  });
+
+  it('builds the query from the title when there is no artist', () => {
+    expect(
+      getAppleMusicQueryFromMetadata({
+        title: 'J. Cole',
+        description: 'Artist',
+        type: MetadataType.Artist,
+      })
+    ).toBe('J. Cole');
+    expect(
+      getAppleMusicQueryFromMetadata({
+        title: 'Chill Hits',
+        description: 'Apple Music · Playlist',
+        type: MetadataType.Playlist,
+      })
+    ).toBe('Chill Hits Apple Music playlist');
+  });
+});
+

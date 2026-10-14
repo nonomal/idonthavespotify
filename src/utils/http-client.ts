@@ -1,7 +1,5 @@
-import axios, { AxiosError } from 'axios';
-import axiosRetry from 'axios-retry';
-
 import { DEFAULT_TIMEOUT } from '~/config/constants';
+import { createHttpBackend } from '~/http-backend';
 import { logger } from '~/utils/logger';
 
 type HttpClientOptions = {
@@ -11,45 +9,112 @@ type HttpClientOptions = {
   retries?: number;
 };
 
-function getRandomUserAgent() {
-  const osOptions = [
-    'Windows NT 10.0; Win64; x64',
-    'Macintosh; Intel Mac OS X 10_15_7',
-    'X11; Linux x86_64',
-  ];
-
-  const chromeVersions = [
-    '91.0.4472.124',
-    '92.0.4515.107',
-    '93.0.4577.63',
-    '94.0.4606.71',
-    '95.0.4638.69',
-  ];
-
-  const os = osOptions[Math.floor(Math.random() * osOptions.length)];
-  const chromeVersion = chromeVersions[Math.floor(Math.random() * chromeVersions.length)];
-
-  return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36 Edg/91.0.864.67`;
+export class HttpClientError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public statusText: string,
+    public url: string,
+    public retryAfter?: string,
+    public body?: string
+  ) {
+    super(message);
+    this.name = 'HttpClientError';
+  }
 }
 
-axiosRetry(axios, {
-  retries: 1,
-  retryCondition: error => {
-    // Retry on network errors or 5xx status codes
-    return axiosRetry.isNetworkError(error) || axiosRetry.isRetryableError(error);
-  },
-  retryDelay: retryCount => {
-    // Exponential backoff delay
-    return retryCount * 1000;
-  },
-});
+const backend = createHttpBackend();
+
+function isRetryable(error: unknown, status?: number): boolean {
+  if (status === 429) return true;
+  if (status && status >= 500) return true;
+  if (backend.isTransportError(error)) return true;
+  return false;
+}
+
+function getRetryDelay(attempt: number, retryAfter?: string | null): number {
+  if (retryAfter) {
+    return (parseInt(retryAfter, 10) + 1) * 1000;
+  }
+  return attempt * 1000;
+}
+
+const SNIPPET_MAX_BYTES = 2048;
+const SNIPPET_MAX_CHARS = 500;
+
+async function readSnippet(response: {
+  readonly body: ReadableStream<Uint8Array> | null;
+  text(): Promise<string>;
+}): Promise<string | undefined> {
+  try {
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const text = await response.text();
+      return text.length > SNIPPET_MAX_CHARS
+        ? `${text.slice(0, SNIPPET_MAX_CHARS)}…`
+        : text || undefined;
+    }
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      const take = Math.min(value.length, SNIPPET_MAX_BYTES - total);
+      chunks.push(value.subarray(0, take));
+      total += take;
+      if (total >= SNIPPET_MAX_BYTES) break;
+    }
+    await reader.cancel().catch(() => undefined);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const text = new TextDecoder().decode(merged);
+    return text.length > SNIPPET_MAX_CHARS
+      ? `${text.slice(0, SNIPPET_MAX_CHARS)}…`
+      : text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries: number
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      const status = error instanceof HttpClientError ? error.status : undefined;
+      if (attempt < retries && isRetryable(error, status)) {
+        const retryAfter =
+          error instanceof HttpClientError ? error.retryAfter : undefined;
+        const delay = getRetryDelay(attempt + 1, retryAfter);
+        logger.debug(
+          `[HttpClient] Retry ${attempt + 1}/${retries} after ${delay}ms`
+        );
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
+function serializeBody(payload: unknown): string | URLSearchParams | undefined {
+  if (payload === undefined || payload === null) return undefined;
+  if (typeof payload === 'string') return payload;
+  if (payload instanceof URLSearchParams) return payload;
+  return JSON.stringify(payload);
+}
 
 export default class HttpClient {
-  static defaultHeaders = {
-    'Accept-Encoding': 'gzip',
-    'User-Agent': getRandomUserAgent(),
-  };
-
   static async get<T>(url: string, options?: HttpClientOptions) {
     logger.debug(`[HttpClient] GET - ${url}`);
     return HttpClient.request<T>('GET', url, options);
@@ -60,38 +125,57 @@ export default class HttpClient {
     return HttpClient.request<T>('POST', url, { ...options, payload });
   }
 
+  static async resolveRedirect(url: string, maxRedirects: number = 10): Promise<string> {
+    logger.debug(`[HttpClient] resolveRedirect - ${url}`);
+    return backend.resolveRedirect(url, maxRedirects);
+  }
+
   private static async request<T>(
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     url: string,
     options?: HttpClientOptions
   ): Promise<T> {
-    const headers = {
-      ...HttpClient.defaultHeaders,
-      ...(options?.headers ?? {}),
-    };
+    const timeout = options?.timeout ?? DEFAULT_TIMEOUT;
+    const retries = options?.retries ?? 2;
+    // A malformed URL (e.g. an unset base URL env var) is a config error:
+    // fail now, not after retries the fetch backend would treat as transport.
+    new URL(url);
 
-    try {
-      const { status, data } = await axios.request({
-        url,
+    return withRetry(async () => {
+      const response = await backend.request(url, {
         method,
-        data: options?.payload,
-        headers,
-        timeout: options?.timeout ?? DEFAULT_TIMEOUT,
-        signal: AbortSignal.timeout(options?.timeout ?? DEFAULT_TIMEOUT),
+        headers: options?.headers,
+        body: method !== 'GET' ? serializeBody(options?.payload) : undefined,
+        timeout,
+        signal: AbortSignal.timeout(timeout),
       });
 
-      if (![200, 201, 204].includes(status)) {
-        throw new AxiosError(`Unexpected status code: ${status}`);
+      if (![200, 201, 204].includes(response.status)) {
+        const retryAfter = response.headers.get('retry-after') ?? undefined;
+        // Capture a bounded upstream body snippet: without it an edge 400
+        // is undebuggable (this exact blindness cost a Tidal debug round).
+        // Bounded reader, never a full buffered read: a hostile error body
+        // must not reach memory no matter what headers it declares.
+        const snippet = await readSnippet(response);
+        throw new HttpClientError(
+          `Unexpected status code: ${response.status}${snippet ? ` body: ${snippet}` : ''}`,
+          response.status,
+          response.statusText,
+          url,
+          retryAfter,
+          snippet
+        );
+      }
+
+      const contentType = response.headers.get('content-type') ?? '';
+      let data: unknown;
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        data = await response.text();
       }
 
       return data as T;
-    } catch (err) {
-      const axiosError = err as AxiosError;
-      logger.error(
-        `[${HttpClient.request.name}] Request failed ${axiosError.message} ${axiosError.response ? axiosError.response.data : ''}`
-      );
-      logger.debug(err);
-      throw err;
-    }
+    }, retries);
   }
 }

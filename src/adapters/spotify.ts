@@ -1,5 +1,4 @@
-import { ADAPTERS_QUERY_LIMIT } from '~/config/constants';
-import { Adapter, MetadataType } from '~/config/enum';
+import { Adapter, MetadataType, Parser } from '~/config/enum';
 import { ENV } from '~/config/env';
 import {
   cacheSearchResultLink,
@@ -7,30 +6,65 @@ import {
   getCachedSearchResultLink,
   getCachedSpotifyAccessToken,
 } from '~/services/cache';
-import type { SearchMetadata, SearchResultLink } from '~/services/search';
+import type { SearchMetadata } from '~/services/search';
 import { getOrUpdateAccessToken } from '~/utils/access-token';
-import { responseMatchesQuery } from '~/utils/compare';
-import HttpClient from '~/utils/http-client';
+import { findBestMatch, type MatchCandidate } from '~/utils/compare';
+import HttpClient, { HttpClientError } from '~/utils/http-client';
 import { logger } from '~/utils/logger';
+import { getServiceGuard } from '~/utils/service-guard';
 
-interface SpotifyAuthResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
+interface SpotifyGraphQLResponse {
+  data: {
+    searchV2?: SpotifySearchResult;
+    search?: SpotifySearchResult;
+  };
 }
 
-interface SpotifySearchResponse {
-  [type: string]: {
-    total: number;
-    items: [
-      {
-        name: string;
-        external_urls: {
-          spotify: string;
-        };
-      },
-    ];
-  };
+interface SpotifySearchResult {
+  tracks?: { items: Array<{ track: SpotifyTrackItem }> };
+  albums?: { items: SpotifyAlbumItem[] };
+  playlists?: { items: Array<{ data: SpotifyPlaylistItem }> };
+  artists?: { items: Array<{ data: SpotifyArtistItem }> };
+  episodes?: { items: Array<{ data: SpotifyEpisodeItem }> };
+  podcasts?: { items: Array<{ data: SpotifyPodcastItem }> };
+}
+
+interface SpotifyTrackItem {
+  uri: string;
+  name: string;
+  artists: { items: Array<{ profile: { name: string } }> };
+}
+
+interface SpotifyAlbumItem {
+  uri: string;
+  name: string;
+  artists: { items: Array<{ profile: { name: string } }> };
+}
+
+interface SpotifyPlaylistItem {
+  uri: string;
+  name: string;
+}
+
+interface SpotifyArtistItem {
+  uri: string;
+  profile: { name: string };
+}
+
+interface SpotifyEpisodeItem {
+  uri: string;
+  name: string;
+}
+
+interface SpotifyPodcastItem {
+  uri: string;
+  name: string;
+}
+
+interface SpotifyTokenResponse {
+  accessToken: string;
+  accessTokenExpirationTimestampMs: number;
+  isAnonymous: boolean;
 }
 
 const SPOTIFY_SEARCH_TYPES = {
@@ -42,51 +76,140 @@ const SPOTIFY_SEARCH_TYPES = {
   [MetadataType.Podcast]: 'episode',
 };
 
-export async function getSpotifyLink(query: string, metadata: SearchMetadata) {
+const SEARCH_DESKTOP_HASH =
+  '75bbf6bfcfdf85b8fc828417bfad92b7cd66bf7f556d85670f4da8292373ebec';
+
+const PLAYER_JS_REGEX = /"(https:\/\/[^" ]+\/(?:mobile-)?web-player\.[0-9a-f]+\.js)"/;
+const SECRETS_REGEX = /\{\s*secret\s*:\s*["']([^"']+)["']\s*,\s*version\s*:\s*(\d+)\s*\}/g;
+
+function uriToUrl(uri: string): string {
+  // spotify:track:abc123 -> https://open.spotify.com/track/abc123
+  const parts = uri.split(':');
+  return `https://open.spotify.com/${parts[1]}/${parts[2]}`;
+}
+
+export async function getSpotifyLink(
+  query: string,
+  metadata: SearchMetadata,
+  sourceParser: Parser,
+  sourceId: string
+) {
   const searchType = SPOTIFY_SEARCH_TYPES[metadata.type];
   if (!searchType) return null;
 
-  const params = new URLSearchParams({
-    q: query,
-    type: searchType,
-    limit: String(ADAPTERS_QUERY_LIMIT),
-  });
-
-  const url = new URL(ENV.adapters.spotify.apiUrl);
-  url.search = params.toString();
-
-  const cache = await getCachedSearchResultLink(url);
+  const cache = await getCachedSearchResultLink(Adapter.Spotify, sourceParser, sourceId);
   if (cache) {
-    logger.info(`[Spotify] (${url}) cache hit`);
+    logger.info(`[Spotify] cache hit`);
     return cache;
   }
 
+  const guard = getServiceGuard('spotify');
+  if (!guard.acquire()) {
+    logger.warn('[Spotify] service guard: request blocked');
+    return null;
+  }
+
   try {
-    const response = await HttpClient.get<SpotifySearchResponse>(url.toString(), {
+    const accessToken = await getOrUpdateSpotifyAccessToken();
+
+    const variables = {
+      searchTerm: query,
+      offset: 0,
+      limit: 4,
+      numberOfTopResults: 5,
+    };
+    const extensions = {
+      persistedQuery: { version: 1, sha256Hash: SEARCH_DESKTOP_HASH },
+    };
+
+    const url = new URL(`${ENV.adapters.spotify.apiUrl}/query`);
+    url.searchParams.set('operationName', 'searchDesktop');
+    url.searchParams.set('variables', JSON.stringify(variables));
+    url.searchParams.set('extensions', JSON.stringify(extensions));
+
+    const data = await HttpClient.get<SpotifyGraphQLResponse>(url.toString(), {
       headers: {
-        Authorization: `Bearer ${await getOrUpdateSpotifyAccessToken()}`,
+        Authorization: `Bearer ${accessToken}`,
+        'app-platform': 'WebPlayer',
       },
     });
 
-    const [[, data]] = Object.entries(response);
-    if (data.total === 0) {
-      throw new Error(`No results found: ${JSON.stringify(response)}`);
+    guard.recordSuccess();
+
+    const search = data.data?.searchV2 ?? data.data?.search;
+    if (!search) {
+      throw new Error(`No search results in response: ${JSON.stringify(data).substring(0, 200)}`);
     }
 
-    const { name, external_urls } = data.items[0];
+    const candidates = extractCandidates(search, searchType);
 
-    const searchResultLink = {
-      type: Adapter.Spotify,
-      url: external_urls.spotify,
-      isVerified: responseMatchesQuery(name ?? '', query),
-    } as SearchResultLink;
+    if (candidates.length === 0) {
+      throw new Error(`No ${searchType} results found for query: ${query}`);
+    }
 
-    await cacheSearchResultLink(url, searchResultLink);
+    const { bestMatch, highestScore } = findBestMatch(candidates, query, Adapter.Spotify);
 
-    return searchResultLink;
+    if (!bestMatch) {
+      throw new Error('No valid matches found.');
+    }
+
+    logger.info(
+      `[Spotify] Best match score: ${highestScore.toFixed(3)} (verified: ${bestMatch.isVerified ? 'yes' : 'no'}, available: ${!bestMatch.notAvailable ? 'yes' : 'no'})`
+    );
+
+    await cacheSearchResultLink(Adapter.Spotify, sourceParser, sourceId, bestMatch);
+
+    return bestMatch;
   } catch (error) {
-    logger.error(`[Spotify] (${url}) ${error}`);
+    guard.recordFailure();
+    const httpErr = error instanceof HttpClientError ? error : null;
+    if (httpErr) {
+      logger.error(
+        `[Spotify] HTTP ${httpErr.status} on ${httpErr.url}${httpErr.retryAfter ? ` (retry-after: ${httpErr.retryAfter}s)` : ''}${httpErr.body ? ` body: ${httpErr.body}` : ''}`
+      );
+    } else {
+      logger.error(`[Spotify] ${error}`);
+    }
     return null;
+  }
+}
+
+function extractCandidates(search: SpotifySearchResult, searchType: string): MatchCandidate[] {
+  switch (searchType) {
+    case 'track':
+      return (search.tracks?.items ?? []).map(({ track }) => ({
+        title: track.name,
+        artist: track.artists?.items?.map(a => a.profile.name).join(', '),
+        url: uriToUrl(track.uri),
+      }));
+    case 'album':
+      return (search.albums?.items ?? []).map(album => ({
+        title: album.name,
+        artist: album.artists?.items?.map(a => a.profile.name).join(', '),
+        url: uriToUrl(album.uri),
+      }));
+    case 'playlist':
+      return (search.playlists?.items ?? []).map(({ data }) => ({
+        title: data.name,
+        url: uriToUrl(data.uri),
+      }));
+    case 'artist':
+      return (search.artists?.items ?? []).map(({ data }) => ({
+        title: data.profile.name,
+        url: uriToUrl(data.uri),
+      }));
+    case 'episode':
+      return (search.episodes?.items ?? []).map(({ data }) => ({
+        title: data.name,
+        url: uriToUrl(data.uri),
+      }));
+    case 'show':
+      return (search.podcasts?.items ?? []).map(({ data }) => ({
+        title: data.name,
+        url: uriToUrl(data.uri),
+      }));
+    default:
+      return [];
   }
 }
 
@@ -94,31 +217,123 @@ export async function getOrUpdateSpotifyAccessToken() {
   return getOrUpdateAccessToken(
     getCachedSpotifyAccessToken,
     async () => {
-      const data = new URLSearchParams({
-        grant_type: 'client_credentials',
-      });
+      const TOKEN_FETCH_TIMEOUT = 10_000;
 
-      const response = await HttpClient.post<SpotifyAuthResponse>(
-        ENV.adapters.spotify.authUrl,
-        data,
-        {
-          headers: {
-            Accept: 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Authorization:
-              'Basic ' +
-              Buffer.from(
-                ENV.adapters.spotify.clientId + ':' + ENV.adapters.spotify.clientSecret
-              ).toString('base64'),
-          },
-        }
+      const { serverTime } = await HttpClient.get<{ serverTime: number }>(
+        `${ENV.adapters.spotify.baseUrl}/api/server-time`,
+        { timeout: TOKEN_FETCH_TIMEOUT }
       );
 
-      return {
-        accessToken: response.access_token,
-        expiresIn: response.expires_in,
-      };
+      const html = await HttpClient.get<string>(ENV.adapters.spotify.baseUrl, {
+        headers: {},
+        timeout: TOKEN_FETCH_TIMEOUT,
+      });
+
+      logger.debug(
+        `[Spotify] Homepage response type: ${typeof html}, length: ${typeof html === 'string' ? html.length : 'N/A'}`
+      );
+
+      const jsMatch = html.match(PLAYER_JS_REGEX);
+      if (!jsMatch) {
+        const anyJs =
+          typeof html === 'string' ? html.match(/https:\/\/[^"'\s]+\.js/g) : null;
+        throw new Error(
+          `Failed to find web player JS bundle URL. ` +
+            `Response type: ${typeof html}, length: ${typeof html === 'string' ? html.length : JSON.stringify(html).length}. ` +
+            `JS files found: ${anyJs ? anyJs.join(', ') : 'none'}`
+        );
+      }
+
+      logger.info(`[Spotify] Fetching web player JS: ${jsMatch[1]}`);
+      const js = await HttpClient.get<string>(jsMatch[1], {
+        timeout: TOKEN_FETCH_TIMEOUT,
+      });
+
+      let latestVersion = 0;
+      let latestSecret = '';
+      let match;
+      while ((match = SECRETS_REGEX.exec(js)) !== null) {
+        const version = parseInt(match[2]);
+        if (version > latestVersion) {
+          latestVersion = version;
+          latestSecret = match[1];
+        }
+      }
+      SECRETS_REGEX.lastIndex = 0;
+
+      if (!latestSecret) {
+        throw new Error(
+          `Failed to extract TOTP secret from web player JS (${jsMatch[1]}), JS length: ${typeof js === 'string' ? js.length : 'not a string'}`
+        );
+      }
+
+      logger.info(`[Spotify] TOTP secret version: ${latestVersion}`);
+      const totp = await generateTotp(serverTime, latestSecret);
+
+      const tokenUrl = new URL(`${ENV.adapters.spotify.baseUrl}/api/token`);
+      tokenUrl.searchParams.set('reason', 'init');
+      tokenUrl.searchParams.set('productType', 'web-player');
+      tokenUrl.searchParams.set('totp', totp);
+      tokenUrl.searchParams.set('totpVer', latestVersion.toString());
+      tokenUrl.searchParams.set('ts', serverTime.toString());
+
+      const tokenData = await HttpClient.get<SpotifyTokenResponse>(tokenUrl.toString(), {
+        headers: {
+          Accept: 'application/json',
+          Referer: `${ENV.adapters.spotify.baseUrl}/`,
+          Origin: ENV.adapters.spotify.baseUrl,
+        },
+        timeout: TOKEN_FETCH_TIMEOUT,
+      });
+
+      if (!tokenData.accessToken) {
+        throw new Error(
+          `No access token in Spotify response: ${JSON.stringify(tokenData)}`
+        );
+      }
+
+      logger.info(`[Spotify] Token obtained, anonymous: ${tokenData.isAnonymous}`);
+
+      const expiresIn = Math.floor(
+        (tokenData.accessTokenExpirationTimestampMs - Date.now()) / 1000
+      );
+
+      return { accessToken: tokenData.accessToken, expiresIn };
     },
     cacheSpotifyAccessToken
   );
+}
+
+// TOTP via WebCrypto (universal across Bun/Node/Workers): the old
+// node:crypto shim breaks under the edge browser-target build.
+export async function generateTotp(serverTime: number, secret: string): Promise<string> {
+  const secretArray = Array.from(secret, c => c.charCodeAt(0));
+  const transformed = secretArray.map((element, index) => element ^ ((index % 33) + 9));
+
+  // Historical quirk, kept byte-identical: the decimal-concatenated string
+  // round-tripped through utf8->hex->bytes, which is just its utf8 bytes.
+  const secretBytes = new TextEncoder().encode(transformed.join(''));
+
+  const counter = Math.floor(serverTime / 30);
+  const counterBytes = new ArrayBuffer(8);
+  new DataView(counterBytes).setBigUint64(0, BigInt(counter));
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    secretBytes,
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, counterBytes);
+  const hmacResult = new Uint8Array(signature);
+
+  const offset = hmacResult[hmacResult.length - 1] & 0xf;
+  const code =
+    ((hmacResult[offset] & 0x7f) << 24) |
+    ((hmacResult[offset + 1] & 0xff) << 16) |
+    ((hmacResult[offset + 2] & 0xff) << 8) |
+    (hmacResult[offset + 3] & 0xff);
+
+  return (code % 10 ** 6).toString().padStart(6, '0');
 }
